@@ -1,4 +1,7 @@
 streamlit
-speechrecognition
+streamlit-webrtc
+SpeechRecognition
 nltk
 numpy
+soundfile
+av
