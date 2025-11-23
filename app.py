@@ -43,6 +43,11 @@ def load_kb(path):
         st.stop()
 
 raw_data = load_kb(KB_FILE)
+import nltk
+
+# Download the necessary 'punkt' data files when the app starts
+nltk.download('punkt')
+
 sentences = sent_tokenize(raw_data)
 
 # PREPROCESSING & CHATBOT
