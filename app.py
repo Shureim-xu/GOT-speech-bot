@@ -19,7 +19,7 @@ from nltk.stem import WordNetLemmatizer
 # NLTK FIXES
 nltk.download("punkt", quiet=True)
 nltk.download("wordnet", quiet=True)
-
+nltk.download('punkt_tab') # Add this line
 # Fix stopwords loading on Windows
 nltk.download("stopwords", quiet=False)
 
