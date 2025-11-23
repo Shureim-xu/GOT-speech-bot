@@ -1,3 +1,6 @@
+import nltk
+nltk.data.path.append("nltk_data")
+
 import streamlit as st
 
 # Set page config at the very top
