@@ -16,11 +16,10 @@ from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
-# NLTK FIXES
+# NLTK FIXES AND DATA LOADING (Keep as is) 
 nltk.download("punkt", quiet=True)
 nltk.download("wordnet", quiet=True)
-nltk.download('punkt_tab') # Add this line
-# Fix stopwords loading on Windows
+nltk.download('punkt_tab')
 nltk.download("stopwords", quiet=False)
 
 try:
@@ -43,14 +42,9 @@ def load_kb(path):
         st.stop()
 
 raw_data = load_kb(KB_FILE)
-import nltk
-
-# Download the necessary 'punkt' data files when the app starts
-nltk.download('punkt')
-
 sentences = sent_tokenize(raw_data)
 
-# PREPROCESSING & CHATBOT
+# PREPROCESSING & CHATBOT FUNCTIONS (Keep as is)
 _stop_words = set(stopwords.words("english"))
 _lemmatizer = WordNetLemmatizer()
 
@@ -64,7 +58,6 @@ def preprocess(text):
 
 corpus = [preprocess(s) for s in sentences]
 original_sentences = sentences.copy()
-
 special_answers = {
     "jaime": "Jaime Lannister is a knight of the Kingsguard known as the Kingslayer.",
     "jamie": "Jaime Lannister is a knight of the Kingsguard known as the Kingslayer.",
@@ -74,63 +67,54 @@ special_answers = {
     "the wall": "The Wall protects the realms of men and is guarded by the Night's Watch.",
     "starks": "The Starks are the ruling family of Winterfell.",
 }
-
 _special_tokens = {k: set(preprocess(k)) for k in special_answers}
-
 
 def get_best_sentence(query):
     q_tokens = set(preprocess(query))
     q_lower = query.lower()
-
-    # Special cases
     for key, ans in special_answers.items():
         if key in q_lower or _special_tokens[key].intersection(q_tokens):
             return ans
-
-    # Similarity search
     best_score = 0
     best_sentence = None
-
     for i, s_tokens in enumerate(corpus):
         s_text = original_sentences[i]
         if "keywords" in s_text.lower():
             continue
-
         intersection = len(set(s_tokens).intersection(q_tokens))
         union = len(set(s_tokens).union(q_tokens))
-
         if union == 0:
             continue
-
         score = intersection / union
-
         if score > best_score:
             best_score = score
             best_sentence = s_text
-
     if best_sentence:
         return best_sentence
-
-    return "I'm not sure — try asking about characters, houses, dragons, or major events."
-
+    return "I'm not sure - try asking about characters, houses, dragons, or major events."
 
 def chatbot(question):
     return get_best_sentence(question)
 
-# AUDIO RECORDER (AUDIO ONLY)
-class Recorder:
-    def __init__(self):
-        self.frames = []
-        self.sample_rate = None
+#  AUDIO RECORDER (MODIFIED to use st.session_state) 
 
+# Initialize session state variables if they don't exist
+if 'audio_frames' not in st.session_state:
+    st.session_state['audio_frames'] = []
+if 'sample_rate' not in st.session_state:
+    st.session_state['sample_rate'] = None
+
+class SessionRecorder:
+    # This function is called every audio frame
     def recv_audio(self, frame: AudioFrame) -> AudioFrame:
         arr = frame.to_ndarray()
-        if self.sample_rate is None:
-            self.sample_rate = frame.sample_rate
-        self.frames.append(arr)
+        if st.session_state['sample_rate'] is None:
+            st.session_state['sample_rate'] = frame.sample_rate
+        # Append to the session state list
+        st.session_state['audio_frames'].append(arr)
         return frame
 
-# FORCE AUDIO ONLY — FIX CAMERA ACTIVATION
+# FORCE AUDIO ONLY -  FIX CAMERA ACTIVATION
 RTC_CONFIGURATION = {
     "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
 }
@@ -140,7 +124,7 @@ MEDIA_CONSTRAINTS = {
     "video": False
 }
 
-# UI
+#  UI (MODIFIED to use SessionRecorder and st.session_state)
 st.title("🐺 Game of Thrones Chatbot - Text + Speech Input")
 
 mode = st.radio("Choose input method:", ["Text", "Speech (microphone)"])
@@ -162,56 +146,57 @@ else:
         key="got-webrtc",
         mode=WebRtcMode.SENDONLY,
         rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints=MEDIA_CONSTRAINTS,  # <<<<<<<<<<<<< FIXES CAMERA ISSUE
+        media_stream_constraints=MEDIA_CONSTRAINTS,
         audio_receiver_size=1024,
-        audio_processor_factory=Recorder,
+        audio_processor_factory=SessionRecorder, # Use the new class
         async_processing=True,
     )
 
     if st.button("Transcribe & Ask"):
-        if not webrtc_ctx or not webrtc_ctx.audio_processor:
-            st.warning("Recorder not ready. Allow microphone & press the ▶ button.")
+        # We don't check webrtc_ctx.audio_processor anymore, we use session state directly
+        frames = st.session_state['audio_frames']
+        sr_rate = st.session_state['sample_rate']
+
+        if not frames:
+            st.warning("No audio captured. Press ▶ and speak.")
+        elif sr_rate is None:
+                st.warning("Sample rate not detected. Try speaking for a moment longer after pressing play.")
         else:
-            proc = webrtc_ctx.audio_processor
-            frames = proc.frames
-            sr_rate = proc.sample_rate
+            # Combine frames
+            arr = np.concatenate(frames, axis=1)
 
-            if not frames:
-                st.warning("No audio captured. Press ▶ and speak.")
+            # Convert to mono
+            if arr.ndim == 2:
+                mono = np.mean(arr, axis=0)
             else:
-                # Combine frames
-                arr = np.concatenate(frames, axis=1)
+                mono = arr
 
-                # Convert to mono
-                if arr.ndim == 2:
-                    mono = np.mean(arr, axis=0)
-                else:
-                    mono = arr
+            mono = mono.astype(np.float32)
 
-                mono = mono.astype(np.float32)
+            # Create WAV in memory
+            bio = io.BytesIO()
+            sf.write(bio, mono.T, samplerate=sr_rate, format="WAV")
+            bio.seek(0)
 
-                # Create WAV in memory
-                bio = io.BytesIO()
-                sf.write(bio, mono.T, samplerate=sr_rate, format="WAV")
-                bio.seek(0)
+            # Transcribe
+            recognizer = sr.Recognizer()
+            try:
+                with sr.AudioFile(bio) as source:
+                    audio_data = recognizer.record(source)
+                    st.info("Transcribing...")
+                    transcription = recognizer.recognize_google(audio_data)
+            except Exception as e:
+                # Catch specific errors if possible, general Exception for now
+                transcription = f"Sorry, I could not understand the audio. Error: {e}"
 
-                # Transcribe
-                recognizer = sr.Recognizer()
-                try:
-                    with sr.AudioFile(bio) as source:
-                        audio_data = recognizer.record(source)
-                        st.info("Transcribing...")
-                        transcription = recognizer.recognize_google(audio_data)
-                except:
-                    transcription = "Sorry, I could not understand the audio."
+            st.subheader("🗣 You said:")
+            st.write(transcription)
 
-                st.subheader("🗣 You said:")
-                st.write(transcription)
+            # Chatbot answer
+            answer = chatbot(transcription)
+            st.subheader("🐺 Chatbot:")
+            st.write(answer)
 
-                # Chatbot answer
-                answer = chatbot(transcription)
-                st.subheader("🐺 Chatbot:")
-                st.write(answer)
-
-                proc.frames = []
-                proc.sample_rate = None
+            # CRITICAL FIX: Reset session state *after* processing 
+            st.session_state['audio_frames'] = []
+            st.session_state['sample_rate'] = None
