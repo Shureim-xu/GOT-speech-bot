@@ -1,3 +1,2 @@
-    streamlit
-    speech_recognition
-    numpy
+streamlit
+speechrecognition
