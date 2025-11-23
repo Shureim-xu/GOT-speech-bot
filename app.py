@@ -18,6 +18,13 @@ nltk.download("punkt", quiet=True)
 nltk.download("stopwords", quiet=True)
 nltk.download("wordnet", quiet=True)
 
+try:
+    # Check if 'punkt' is already available
+    nltk.data.find('tokenizers/punkt')
+except nltk.downloader.DownloadError:
+    # If not found, download it programmatically
+    nltk.download('punkt')
+    
 # Load knowledge base
 KB_FILE = "got_knowledge_base.txt"
 
