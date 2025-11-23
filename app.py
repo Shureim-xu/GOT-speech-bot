@@ -15,11 +15,6 @@ from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
-# NLTK resources: Download these immediately upon script start
-# The quiet=True keeps the download messages cleaner in the Streamlit output
-nltk.download("punkt", quiet=True)
-nltk.download("stopwords", quiet=True)
-nltk.download("wordnet", quiet=True)
 
 try:
     # Check if 'punkt' is already available
