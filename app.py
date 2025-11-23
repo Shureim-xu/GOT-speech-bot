@@ -1,48 +1,44 @@
-import nltk
-nltk.data.path.append("nltk_data")
-
+# app.py - GoT Speech Chatbot using streamlit-webrtc (WAV)
 import streamlit as st
+st.set_page_config(page_title="GoT Speech Chatbot (WebRTC)", page_icon="🐺")
 
-# Set page config at the very top
-st.set_page_config(page_title="GoT Speech Chatbot", page_icon="🐺")
-
-import speech_recognition as sr
-import nltk
-import string
 import time
 import io
+import numpy as np
+import nltk
+import string
+import speech_recognition as sr
+import soundfile as sf
+
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, ClientSettings
+from av import AudioFrame
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
+# NLTK downloads (quiet)
+nltk.download("punkt", quiet=True)
+nltk.download("stopwords", quiet=True)
+nltk.download("wordnet", quiet=True)
 
-try:
-    # Check if 'punkt' is already available
-    nltk.data.find('tokenizers/punkt')
-except nltk.downloader.DownloadError:
-    # If not found, download it programmatically
-    nltk.download('punkt')
-    
-# Load knowledge base
-KB_FILE = "got_knowledge_base.txt"
+# Knowledge base path (uploaded)
+KB_FILE = "/mnt/data/got_knowledge_base.txt"
 
 @st.cache_data
 def load_kb(path):
-    # It's good practice to ensure the KB file exists before trying to open it
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = f.read().replace("\n", " ")
         return raw
     except FileNotFoundError:
-        st.error(f"Error: Knowledge base file '{path}' not found.")
-        st.stop() # Stop the script if data isn't there
+        st.error(f"Knowledge base not found at: {path}")
+        st.stop()
 
 raw_data = load_kb(KB_FILE)
 sentences = sent_tokenize(raw_data)
 
-# Preprocessing
-# FIX: The original error was right here. 'english' was not a string.
-_stop_words = set(stopwords.words("english")) 
+# Preprocessing & chatbot logic
+_stop_words = set(stopwords.words("english"))
 _lemmatizer = WordNetLemmatizer()
 
 def preprocess(text):
@@ -57,7 +53,6 @@ def preprocess(text):
 corpus = [preprocess(s) for s in sentences]
 original_sentences = sentences.copy()
 
-# Special direct answers
 special_answers = {
     "jaime": "Jaime Lannister is a knight of the Kingsguard known as the Kingslayer.",
     "jamie": "Jaime Lannister is a knight of the Kingsguard known as the Kingslayer.",
@@ -70,18 +65,15 @@ special_answers = {
 
 _special_tokens = {k: set(preprocess(k)) for k in special_answers}
 
-# Chatbot logic
 def get_best_sentence(query):
     q_tokens = set(preprocess(query))
     q_lower = query.lower()
 
-    # special answers first
     for key, ans in special_answers.items():
         if key in q_lower or _special_tokens[key].intersection(q_tokens):
             return ans
 
-    # similarity search
-    best_score = 0
+    best_score = 0.0
     best_sentence = None
 
     for i, s_tokens in enumerate(corpus):
@@ -104,102 +96,156 @@ def get_best_sentence(query):
 
     return "I’m not sure — try asking about characters, houses, or major events."
 
-
 def chatbot(question):
     return get_best_sentence(question)
 
+# Recorder class for webrtc
+class Recorder:
+    def __init__(self):
+        self.frames = []  # list of numpy arrays (channels, samples)
+        self.sample_rate = None
 
-# Speech Recognition
-def transcribe_speech(pause_duration=0.8): # Removed 'language' arg which wasn't used in the call below
-    r = sr.Recognizer()
+    def recv_audio(self, frame: AudioFrame) -> AudioFrame:
+        # Called for each incoming audio frame by streamlit-webrtc.
+        # Convert frame to ndarray (shape: channels x samples)
+        arr = frame.to_ndarray()
+        # store sample rate once
+        if self.sample_rate is None:
+            self.sample_rate = frame.sample_rate
+        self.frames.append(arr)
+        return frame  # pass-through
 
-    with sr.Microphone() as source:
-        st.info("Listening... Speak now.")
-        r.pause_threshold = pause_duration
+# UI
+st.title("🐺 Game of Thrones - Speech Chatbot (browser recorder)")
+st.write("Use the recorder below to capture audio in your browser. When finished, click **Transcribe & Ask** to send the audio to the chatbot.")
 
-        try:
-            audio = r.listen(source, timeout=5, phrase_time_limit=15)
-            st.info("Transcribing...")
-        except sr.WaitTimeoutError:
-            st.warning("No speech detected.")
-            return None
-        except Exception as e:
-            st.error(f"Microphone error: {e}")
-            return None
+st.markdown(
+    """
+**Notes**
+- The recorder uses the browser's microphone (WebRTC).
+- No PyAudio or server-side microphone is required.
+- After recording, the audio is converted to WAV (mono) and sent to the recognizer.
+"""
+)
 
-        try:
-            # Using 'en-US' as default language code for Google recognition
-            return r.recognize_google(audio, language="en-US") 
-        except sr.UnknownValueError:
-            st.warning("Sorry, I could not understand the audio.")
-            return None
-        except sr.RequestError:
-            st.error("Speech recognition service unavailable.")
-            return None
-        except Exception as e:
-            st.error(f"Unexpected error during transcription: {e}")
-            return None
+# WebRTC client settings (optional)
+CLIENT_SETTINGS = ClientSettings(
+    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+    media_stream_constraints={"audio": True, "video": False},
+)
 
-# --- Streamlit UI Section ---
+st.markdown("---")
+st.markdown("#### 1) Start the recorder (click the play ▶️ button in the widget below). Speak for a few seconds.")
+webrtc_ctx = webrtc_streamer(
+    key="got-webrtc",
+    mode=WebRtcMode.SENDONLY,
+    client_settings=CLIENT_SETTINGS,
+    audio_receiver_size=1024,
+    video_frame_callback=None,
+    audio_processor_factory=Recorder,
+    async_processing=True,
+)
 
-st.title("🐺 Game of Thrones Chatbot — Speech + Text ")
-st.write("Use **text** or upload an **audio recording** to ask your question.")
+st.markdown("#### 2) When you finish recording, click **Transcribe & Ask**.")
+# Optional pause threshold slider for UX (not used by recognizer)
+pause = st.slider("Pause threshold (UI only)", 0.5, 2.0, 0.8, 0.1)
 
+col1, col2 = st.columns([1,1])
+with col1:
+    if st.button("Transcribe & Ask"):
+        # check that webrtc is running and we've got an audio_processor
+        if webrtc_ctx and webrtc_ctx.audio_processor:
+            proc = webrtc_ctx.audio_processor
+            frames = getattr(proc, "frames", None)
+            sr_rate = getattr(proc, "sample_rate", None)
 
-# Chat history setup
-if "history" not in st.session_state:
-    st.session_state.history = []
+            if not frames or sr_rate is None:
+                st.warning("No audio captured yet. Start the recorder and speak.")
+            else:
+                # Concatenate frames (each frame shape: channels x samples)
+                try:
+                    arr = np.concatenate(frames, axis=1)  # channels x total_samples
+                except Exception as e:
+                    st.error(f"Error concatenating audio frames: {e}")
+                    arr = None
 
+                if arr is not None:
+                    # convert to mono: average channels if necessary
+                    if arr.ndim == 2:
+                        if arr.shape[0] > 1:
+                            mono = np.mean(arr, axis=0)
+                        else:
+                            mono = arr[0]
+                    else:
+                        mono = arr
 
-mode = st.radio("Choose input method:", ["Text", "Upload Audio"])
+                    # normalize to float32 in range [-1.0, 1.0] if needed
+                    # av returns int16-like types sometimes; soundfile will handle many dtypes but converting ensures consistency
+                    mono = mono.astype(np.float32)
 
-# TEXT INPUT MODE
-if mode == "Text":
-    user_text = st.text_input("Type your question:")
-    if st.button("Ask"):
-        if user_text.strip():
-            answer = chatbot(user_text)
-            st.session_state.history.append(("You", user_text))
-            st.session_state.history.append(("Bot", answer))
+                    # write to in-memory WAV
+                    bio = io.BytesIO()
+                    sf.write(bio, mono.T, samplerate=sr_rate, format="WAV")
+                    bio.seek(0)
 
-# SPEECH INPUT MODE (Moved UI elements down here for clarity)
-if mode == "Upload Audio": # Original code seemed to treat this as just "microphone input"
-    # The original script had UI elements for speech *outside* the mode check, I put them inside here
-    pause = st.slider(
-        "Pause Threshold (controls pause/continue)",
-        0.5, 2.0, 0.8, 0.1
-    )
+                    # Transcribe with SpeechRecognition using AudioFile from memory
+                    r = sr.Recognizer()
+                    try:
+                        with sr.AudioFile(bio) as source:
+                            audio_data = r.record(source)
+                            st.info("Transcribing audio...")
+                            transcription = r.recognize_google(audio_data)
+                    except sr.UnknownValueError:
+                        transcription = "Sorry, I could not understand the audio."
+                    except sr.RequestError:
+                        transcription = "Speech recognition service unavailable."
+                    except Exception as e:
+                        transcription = f"Transcription error: {e}"
 
-    if st.button("🎙 Start Talking"):
-        # The function was called with 'pause' value where 'language' should have been. 
-        # Corrected the function call and definition.
-        transcription = transcribe_speech(pause_duration=pause) 
+                    # Show user transcription and chatbot response
+                    st.subheader("🗣 You said:")
+                    st.write(transcription)
+                    if transcription and not transcription.lower().startswith(("sorry", "transcription error")):
+                        answer = chatbot(transcription)
+                    else:
+                        answer = transcription
 
-        if transcription:
-            st.subheader("🗣 You Said:")
-            st.write(transcription)
+                    st.subheader("🐺 Chatbot:")
+                    st.write(answer)
 
-            # Check transcription results before generating an answer
-            if transcription not in ["No speech detected.", "Sorry, I could not understand the audio.", "Speech recognition service unavailable.", None]:
-                answer = chatbot(transcription)
-                st.subheader("🐺 Chatbot:")
-                st.write(answer)
-                
-                st.session_state.history.append(("You (Speech)", transcription))
-                st.session_state.history.append(("Bot", answer))
+                    # save to session history
+                    if "history" not in st.session_state:
+                        st.session_state.history = []
+                    st.session_state.history.append(("You (speech)", transcription))
+                    st.session_state.history.append(("Bot", answer))
 
-                # save option
-                if st.button("💾 Save Chat"):
-                    filename = f"chat_{int(time.time())}.txt"
-                    with open(filename, "w", encoding="utf-8") as f:
-                        f.write(f"You: {transcription}\nBot: {answer}")
-                    st.success(f"Saved as {filename}")
+                    # option to download the recorded WAV
+                    st.download_button(
+                        "📥 Download recorded WAV",
+                        data=bio.getvalue(),
+                        file_name=f"recording_{int(time.time())}.wav",
+                        mime="audio/wav",
+                    )
+                # reset frames in processor for next recording
+                proc.frames = []
+                proc.sample_rate = None
+        else:
+            st.warning("Recorder not ready. Make sure you've allowed microphone permissions and started the recorder.")
 
-# Display Chat History at the bottom
+with col2:
+    if st.button("Clear chat history"):
+        st.session_state.history = []
+
+st.markdown("---")
 st.subheader("Chat History")
-for role, message in reversed(st.session_state.history):
-    if role == "You" or role == "You (Speech)":
-        st.markdown(f"**{role}:** *{message}*")
-    else:
-        st.markdown(f"**{role}:** {message}")
+if "history" in st.session_state and st.session_state.history:
+    for role, msg in st.session_state.history:
+        if role.startswith("You"):
+            st.markdown(f"**{role}:** *{msg}*")
+        else:
+            st.markdown(f"**{role}:** {msg}")
+else:
+    st.info("No messages yet. Record audio and click 'Transcribe & Ask'.")
 
+st.markdown("---")
+st.markdown("If you run into problems on Streamlit Cloud, try in Chrome/Firefox desktop and ensure microphone permissions are granted.")
